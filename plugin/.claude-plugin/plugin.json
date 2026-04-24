@@ -1,0 +1,12 @@
+{
+  "name": "cosmic-grackle",
+  "description": "macOS Contacts MCP server with a skill for creating, updating, and deleting contacts via Apple's native Contacts framework.",
+  "version": "0.0.0-dev",
+  "author": {
+    "name": "Nick Gerakines",
+    "email": "nick.gerakines@gmail.com"
+  },
+  "homepage": "https://github.com/ngerakines/cosmic-grackle",
+  "repository": "https://github.com/ngerakines/cosmic-grackle",
+  "license": "MIT"
+}

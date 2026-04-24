@@ -14,9 +14,21 @@ A macOS Contacts MCP server written in Rust. Exposes Apple Contacts via the Mode
 cargo build --release
 ```
 
-## Usage
+## Install as a Claude plugin
 
-Configure as a local MCP server in your MCP client (e.g., Claude Desktop):
+Each tagged release publishes `cosmic-grackle-plugin.tar.gz` — a bundle containing a universal (x86_64 + arm64) binary, the `macos-contacts` skill, and a plugin manifest. Install it into Claude Desktop / Claude Code:
+
+```sh
+mkdir -p ~/.claude/plugins
+tar -xzf cosmic-grackle-plugin.tar.gz -C ~/.claude/plugins/
+xattr -dr com.apple.quarantine ~/.claude/plugins/cosmic-grackle
+```
+
+The `xattr` step removes Gatekeeper quarantine from the unsigned binary so Claude can launch it. Restart Claude Desktop (or run `/plugin` in Claude Code) to pick up the plugin. The first tool call triggers the macOS Contacts permission prompt; grant access in **System Settings → Privacy & Security → Contacts**.
+
+## Usage (manual config)
+
+As an alternative to the plugin bundle, configure the binary directly in your MCP client (e.g., Claude Desktop):
 
 ```json
 {
