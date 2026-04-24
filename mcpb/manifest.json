@@ -1,0 +1,27 @@
+{
+  "manifest_version": "0.3",
+  "name": "cosmic-grackle",
+  "display_name": "macOS Contacts",
+  "version": "0.0.0-dev",
+  "description": "macOS Contacts MCP server. Exposes Apple Contacts via MCP over stdio.",
+  "author": {
+    "name": "Nick Gerakines",
+    "email": "nick.gerakines@gmail.com"
+  },
+  "homepage": "https://github.com/ngerakines/cosmic-grackle",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ngerakines/cosmic-grackle"
+  },
+  "license": "MIT",
+  "server": {
+    "type": "binary",
+    "entry_point": "bin/cosmic-grackle",
+    "mcp_config": {
+      "command": "${__dirname}/bin/cosmic-grackle"
+    }
+  },
+  "compatibility": {
+    "platforms": ["darwin"]
+  }
+}

@@ -308,7 +308,7 @@ impl ContactsServer {
 
     #[tool(
         name = "contacts_list",
-        description = "List all contacts from macOS Contacts. Returns an array of contact objects with name, email, phone, and other details."
+        description = "List contacts from macOS Contacts, optionally capped by `limit`. Returns full records including the opaque `id` required by contacts_update and contacts_delete. Prefer contacts_search when you already know a name."
     )]
     async fn contacts_list(
         &self,
@@ -326,7 +326,7 @@ impl ContactsServer {
 
     #[tool(
         name = "contacts_search",
-        description = "Search contacts by name. Returns contacts whose name matches the query string."
+        description = "Search contacts by name substring. Primary way to resolve the opaque `id` required by contacts_update and contacts_delete. If the search returns multiple matches, ask the user which one to act on — do not guess. If it returns zero, confirm the spelling with the user before creating a new contact."
     )]
     async fn contacts_search(
         &self,
@@ -345,7 +345,7 @@ impl ContactsServer {
 
     #[tool(
         name = "contacts_get",
-        description = "Get a single contact by their unique identifier. Returns full contact details."
+        description = "Get a single contact by `id`. Call this before contacts_update when using the `_from`/`_to` ops — matching on `_from` is exact against the stored form, so you need to read the canonical value first (e.g. a phone stored as `+1 (555) 010-0000` will not match `555-0100`). Also call before contacts_delete to show the user the full record for confirmation."
     )]
     async fn contacts_get(
         &self,
@@ -372,7 +372,7 @@ impl ContactsServer {
 
     #[tool(
         name = "contacts_create",
-        description = "Create a new contact in macOS Contacts. At least one of first_name, last_name, or organization is required. Scalar fields (names, nickname, prefix/suffix, department, job_title, note, contact_type, birthday) can be set directly. Exactly one phone, email, url, and postal address may be set via the shorthand fields — each gets a default label (phone=mobile, email=work, url=homepage, postal_address=home). For multiple entries or custom labels, create first then use contacts_update. Returns the new contact's identifier."
+        description = "Create a new contact in macOS Contacts. At least one of first_name, last_name, or organization is required. Scalar fields (names, nickname, prefix/suffix, department, job_title, note, contact_type, birthday) can be set directly. At most one phone, email, url, and postal_address may be set here — each gets a default label (phone=mobile, email=work, url=homepage, postal_address=home). For additional entries, create first then add them with contacts_update. This server cannot rename labels; direct the user to Contacts.app for that. `birthday` accepts `YYYY-MM-DD` or `--MM-DD` (no year). Returns `{\"id\": \"<opaque-id>\", \"success\": true}`; retain the id for any follow-up ops."
     )]
     async fn contacts_create(
         &self,
@@ -461,7 +461,7 @@ impl ContactsServer {
 
     #[tool(
         name = "contacts_update",
-        description = "Update an existing contact. Requires the contact's identifier. Only provided fields are updated. Phones, emails, URLs, and postal addresses are edited via paired fields (e.g. phone_from/phone_to): set only _to to add a new entry, set only _from to remove an entry, set both to replace _from with _to (the original label is preserved). Match is exact — call contacts_get first to see the stored form. Postal addresses match on the joined-string form exposed in Contact.addresses."
+        description = "Update an existing contact. Requires the opaque `id` (resolve via contacts_search or contacts_list first — names are not stable keys). Partial update: omitted fields are left alone. Phones, emails, URLs, and postal addresses are edited via paired `_from`/`_to` fields: only `_to` = **add** new entry with default label; only `_from` = **remove**; both = **replace** (original label preserved). Matching on `_from` is exact against the stored form — call contacts_get first to read the canonical value. A bare `_to` creates a new entry; it does NOT modify an existing one. This server cannot rename labels or add/remove group membership — direct the user to Contacts.app for either. `postal_from` matches the joined-string shown in `Contact.addresses` (e.g. `\"123 Main St, Austin, TX, 78701, USA\"`); `postal_to` is the structured form."
     )]
     async fn contacts_update(
         &self,
@@ -562,7 +562,7 @@ impl ContactsServer {
 
     #[tool(
         name = "contacts_delete",
-        description = "Delete a contact by their unique identifier."
+        description = "Delete a contact by opaque `id`. Permanent — there is no undo through this server. Before calling: (1) resolve the id via contacts_search, (2) call contacts_get and show the user the full record (name, org, emails, phones), (3) get explicit confirmation from the user. Do not delete on the first request for a named contact without confirmation."
     )]
     async fn contacts_delete(
         &self,
@@ -582,7 +582,7 @@ impl ContactsServer {
 
     #[tool(
         name = "groups_list",
-        description = "List all contact groups with their member counts."
+        description = "List all contact groups with their member counts. Read-only: this server cannot create groups, rename them, or add/remove members — those require Contacts.app."
     )]
     async fn groups_list(&self) -> Result<CallToolResult, McpError> {
         let groups = self
@@ -597,7 +597,7 @@ impl ContactsServer {
 
     #[tool(
         name = "groups_members",
-        description = "Get all contacts that belong to a specific group. The group is looked up by name (case-insensitive)."
+        description = "Get all contacts that belong to a specific group (lookup is case-insensitive by group name). Read-only; membership changes must be made in Contacts.app."
     )]
     async fn groups_members(
         &self,
@@ -619,7 +619,16 @@ impl ContactsServer {
 impl ServerHandler for ContactsServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
-            "macOS Contacts MCP server. Provides tools to list, search, create, update, and delete contacts and groups from the macOS Contacts app.",
+            "macOS Contacts MCP server — CRUD for the native macOS Contacts app (CNContactStore). \
+             Scope: applies ONLY to local Apple Contacts on this Mac. NOT for Google Contacts, iCloud.com, Outlook, or any CRM / third-party address book.\n\
+             \n\
+             Identifier model: every contact has an opaque `id`. `contacts_update` and `contacts_delete` take the id, NOT a name. Two contacts can share a name, so always resolve to an id first with `contacts_search` (or `contacts_list`). If the search returns multiple matches, ask the user which one to act on — never guess.\n\
+             \n\
+             Mutation workflow: search → disambiguate if needed → `contacts_get` to read the canonical stored form → mutate. For `contacts_update` the paired `_from`/`_to` ops match `_from` exactly against the stored value (e.g. a phone stored as `+1 (555) 010-0000` will not match `555-0100`), so `contacts_get` before any replace or remove is mandatory. `_to` alone adds a new entry with a default label; `_from` alone removes; both together replaces in place. This server cannot rename entry labels or change group membership — direct the user to Contacts.app for those.\n\
+             \n\
+             Delete is permanent: before calling `contacts_delete`, show the user the full record (from `contacts_get`) and get explicit confirmation. Do not delete on the first request for a named contact without confirmation.\n\
+             \n\
+             Permissions: the first tool call after install triggers the macOS Contacts permission prompt. If the user denies it, subsequent calls return an internal error. Recovery: System Settings → Privacy & Security → Contacts → enable access for the invoking process (Claude or cosmic-grackle), then restart the client so the MCP server relaunches with the new entitlement.",
         )
     }
 }
