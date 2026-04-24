@@ -73,9 +73,71 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  plugin:
+    name: Package plugin bundle
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download per-arch artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Stage and package plugin
+        id: package
+        run: |
+          set -euo pipefail
+
+          mkdir -p thin
+          tar -xzf dist/cosmic-grackle-darwin-amd64.tar.gz -C thin
+          mv thin/cosmic-grackle thin/cosmic-grackle-amd64
+          tar -xzf dist/cosmic-grackle-darwin-arm64.tar.gz -C thin
+          mv thin/cosmic-grackle thin/cosmic-grackle-arm64
+
+          STAGE_PARENT="$(mktemp -d)"
+          STAGE="$STAGE_PARENT/cosmic-grackle"
+          mkdir -p "$STAGE/bin"
+          cp -R plugin/. "$STAGE/"
+
+          lipo -create \
+            -output "$STAGE/bin/cosmic-grackle" \
+            thin/cosmic-grackle-amd64 \
+            thin/cosmic-grackle-arm64
+          chmod +x "$STAGE/bin/cosmic-grackle"
+
+          VERSION="${GITHUB_REF_NAME}"
+          jq --arg v "$VERSION" '.version = $v' \
+            "$STAGE/.claude-plugin/plugin.json" \
+            > "$STAGE/.claude-plugin/plugin.json.tmp"
+          mv "$STAGE/.claude-plugin/plugin.json.tmp" "$STAGE/.claude-plugin/plugin.json"
+
+          cp LICENSE README.md "$STAGE/"
+
+          ARCHIVE="cosmic-grackle-plugin.tar.gz"
+          tar -C "$STAGE_PARENT" -czf "$ARCHIVE" cosmic-grackle
+          shasum -a 256 "$ARCHIVE" > "$ARCHIVE.sha256"
+
+          echo "archive=$ARCHIVE" >> "$GITHUB_OUTPUT"
+          echo "checksum=$ARCHIVE.sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Upload plugin artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cosmic-grackle-plugin
+          path: |
+            ${{ steps.package.outputs.archive }}
+            ${{ steps.package.outputs.checksum }}
+          if-no-files-found: error
+          retention-days: 7
+
   release:
     name: Publish GitHub Release
-    needs: build
+    needs: [build, plugin]
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
