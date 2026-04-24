@@ -1,12 +1,17 @@
 [package]
-name = "tashkent"
+name = "cosmic-grackle"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.95.0"
 description = "macOS Contacts MCP server"
 
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+
 [dependencies]
-rmcp = { version = "0.14", features = ["server", "transport-io", "macros"] }
+rmcp = { version = "1.5", features = ["server", "transport-io", "macros"] }
 objc2 = "0.6"
 objc2-contacts = { version = "0.3", features = [
     "CNContact",

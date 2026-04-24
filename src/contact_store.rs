@@ -1,7 +1,26 @@
+//! macOS Contacts-framework bindings.
+//!
+//! Safety notes shared by the `unsafe` blocks in this module:
+//!
+//! - `CNContactStore` is not thread-safe. A single dedicated worker thread owns
+//!   the store and is the only place it is touched; this is what makes the many
+//!   `unsafe` calls in `*_impl` functions sound.
+//! - Retained<T> values returned by objc2 accessors (identifier, givenName, etc.)
+//!   are autoreleased-then-retained NSObject wrappers and are safe to use as long
+//!   as Rust owns them. Reads into `String` via `.to_string()` copy out of the
+//!   NSString so the Retained<NSString> can be dropped immediately after.
+//! - Setter calls (`setGivenName`, `setFamilyName`, …) on `CNMutableContact` are
+//!   marked unsafe by objc2 because they send selectors; the receiver in every
+//!   call here is a freshly constructed or just-copied `CNMutableContact`, so
+//!   the receiver-type invariant is trivially satisfied.
+//! - Individual `unsafe` blocks with non-trivial invariants (block callbacks,
+//!   framework statics, NonNull dereferences) carry their own SAFETY comments.
+
 use std::cell::RefCell;
 use std::ptr::NonNull;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Duration;
 
 use block2::RcBlock;
 use objc2::AnyThread;
@@ -14,6 +33,8 @@ use tokio::sync::{mpsc, oneshot};
 use crate::error::ContactsError;
 use crate::keys::contact_fetch_keys_array;
 use crate::models::{Contact, ContactGroup};
+
+const AUTH_CALLBACK_TIMEOUT: Duration = Duration::from_secs(10);
 
 const NS_DATE_COMPONENT_UNDEFINED: isize = isize::MAX;
 
@@ -82,6 +103,9 @@ impl ContactStoreHandle {
         let (tx, mut rx) = mpsc::channel::<StoreCommand>(32);
 
         let handle = std::thread::spawn(move || {
+            // SAFETY: CNContactStore must be created and used on a single thread because
+            // the underlying Apple framework is not thread-safe. This thread owns the store
+            // for its entire lifetime and is the only thread that touches it.
             let store = unsafe { CNContactStore::new() };
 
             // Log the authorization status but don't block on it.
@@ -244,7 +268,7 @@ fn log_authorization_status(store: &CNContactStore) {
                 store.requestAccessForEntityType_completionHandler(CNEntityType::Contacts, &block);
             }
 
-            match rx.recv() {
+            match rx.recv_timeout(AUTH_CALLBACK_TIMEOUT) {
                 Ok(true) => {
                     tracing::info!("Contacts access granted");
                 }
@@ -253,8 +277,14 @@ fn log_authorization_status(store: &CNContactStore) {
                         "Contacts access denied. Grant access in System Settings > Privacy & Security > Contacts for your terminal application"
                     );
                 }
-                Err(_) => {
-                    tracing::warn!("Authorization callback did not fire");
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    tracing::warn!(
+                        "Authorization prompt timed out after {:?}. If no dialog appeared, grant access in System Settings > Privacy & Security > Contacts and restart",
+                        AUTH_CALLBACK_TIMEOUT
+                    );
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    tracing::warn!("Authorization callback channel disconnected");
                 }
             }
         }
@@ -272,7 +302,23 @@ fn log_authorization_status(store: &CNContactStore) {
     }
 }
 
+fn nserror_is_record_not_found(err: &NSError) -> bool {
+    // SAFETY: reading an Objective-C `extern static` is `unsafe` by rule, but
+    // `CNErrorDomain` is a framework-provided constant initialized before `main`.
+    // We only read the pointer; the NSString behind it stays live for the process.
+    let Some(expected) = (unsafe { CNErrorDomain }) else {
+        return false;
+    };
+    err.domain().to_string() == expected.to_string()
+        && err.code() == CNErrorCode::RecordDoesNotExist.0
+}
+
 fn cncontact_to_model(contact: &CNContact) -> Contact {
+    // SAFETY: `contact` is a live CNContact owned by the caller. All property accessors
+    // below are non-mutating and return Retained<NSObject> values, which are safe to use
+    // for the duration of this function. The requested keys are fetched with the
+    // descriptor array from `contact_fetch_keys`, so these reads will not trigger a
+    // CNPropertyNotFetched exception.
     unsafe {
         let id = contact.identifier().to_string();
         let first_name = contact.givenName().to_string();
@@ -375,16 +421,24 @@ fn enumerate_contacts(
 
     let block = RcBlock::new(
         move |contact_ptr: NonNull<CNContact>, stop: NonNull<Bool>| {
+            // SAFETY: CNContactStore guarantees a valid CNContact pointer for the
+            // duration of this callback. NonNull is non-null by construction; aliasing
+            // is fine because we only read from the contact here.
             let contact_ref = unsafe { contact_ptr.as_ref() };
             let mut vec = contacts_clone.borrow_mut();
             vec.push(cncontact_to_model(contact_ref));
             if vec.len() >= limit_val {
+                // SAFETY: `stop` points to a BOOL owned by the framework for this
+                // enumeration. Writing YES asks it to stop iterating; the framework
+                // keeps the pointer valid until the callback returns.
                 unsafe { stop.as_ptr().write(Bool::YES) };
             }
         },
     );
 
     let mut error: Option<Retained<NSError>> = None;
+    // SAFETY: The fetch request and block outlive the call. The block only borrows
+    // `contacts_clone` through an Rc, which is dropped when the block is dropped below.
     let success = unsafe {
         store.enumerateContactsWithFetchRequest_error_usingBlock(request, Some(&mut error), &block)
     };
@@ -400,8 +454,12 @@ fn enumerate_contacts(
         ));
     }
 
+    // Drop the block first so the only remaining Rc owner is `contacts`. Then
+    // `try_unwrap` cannot fail.
     drop(block);
-    Ok(Rc::try_unwrap(contacts).unwrap().into_inner())
+    Ok(Rc::try_unwrap(contacts)
+        .expect("block was dropped above; Rc should be uniquely owned")
+        .into_inner())
 }
 
 fn list_contacts_impl(
@@ -438,11 +496,12 @@ fn get_contact_impl(store: &CNContactStore, id: &str) -> Result<Option<Contact>,
     match unsafe { store.unifiedContactWithIdentifier_keysToFetch_error(&ns_id, &keys) } {
         Ok(contact) => Ok(Some(cncontact_to_model(&contact))),
         Err(err) => {
-            let desc = err.localizedDescription().to_string();
-            if desc.contains("not found") || desc.contains("No results") {
+            if nserror_is_record_not_found(&err) {
                 Ok(None)
             } else {
-                Err(ContactsError::ObjcError(desc))
+                Err(ContactsError::ObjcError(
+                    err.localizedDescription().to_string(),
+                ))
             }
         }
     }
@@ -477,16 +536,14 @@ fn create_contact_impl(
             contact.setEmailAddresses(&emails);
         }
 
-        if let Some(ref phone) = params.phone {
-            if let Some(phone_number) =
+        if let Some(phone) = params.phone.as_deref()
+            && let Some(phone_number) =
                 CNPhoneNumber::phoneNumberWithStringValue(&NSString::from_str(phone))
-            {
-                let label = NSString::from_str("mobile");
-                let labeled =
-                    CNLabeledValue::labeledValueWithLabel_value(Some(&label), &*phone_number);
-                let phones = NSArray::from_retained_slice(&[labeled]);
-                contact.setPhoneNumbers(&phones);
-            }
+        {
+            let label = NSString::from_str("mobile");
+            let labeled = CNLabeledValue::labeledValueWithLabel_value(Some(&label), &*phone_number);
+            let phones = NSArray::from_retained_slice(&[labeled]);
+            contact.setPhoneNumbers(&phones);
         }
 
         let save_request = CNSaveRequest::new();
@@ -508,7 +565,13 @@ fn update_contact_impl(
     let ns_id = NSString::from_str(&params.id);
 
     let contact = unsafe { store.unifiedContactWithIdentifier_keysToFetch_error(&ns_id, &keys) }
-        .map_err(|err| ContactsError::ContactNotFound(err.localizedDescription().to_string()))?;
+        .map_err(|err| {
+            if nserror_is_record_not_found(&err) {
+                ContactsError::ContactNotFound(params.id.clone())
+            } else {
+                ContactsError::ObjcError(err.localizedDescription().to_string())
+            }
+        })?;
 
     unsafe {
         let mutable: Retained<CNMutableContact> = contact.mutableCopy();
@@ -545,7 +608,13 @@ fn delete_contact_impl(store: &CNContactStore, id: &str) -> Result<bool, Contact
     let ns_id = NSString::from_str(id);
 
     let contact = unsafe { store.unifiedContactWithIdentifier_keysToFetch_error(&ns_id, &keys) }
-        .map_err(|err| ContactsError::ContactNotFound(err.localizedDescription().to_string()))?;
+        .map_err(|err| {
+            if nserror_is_record_not_found(&err) {
+                ContactsError::ContactNotFound(id.to_string())
+            } else {
+                ContactsError::ObjcError(err.localizedDescription().to_string())
+            }
+        })?;
 
     unsafe {
         let mutable: Retained<CNMutableContact> = contact.mutableCopy();
@@ -591,11 +660,22 @@ fn list_groups_impl(store: &CNContactStore) -> Result<Vec<ContactGroup>, Contact
         });
 
         let mut error: Option<Retained<NSError>> = None;
-        unsafe {
+        // SAFETY: request and block live through the call; error is an out-param.
+        let success = unsafe {
             store.enumerateContactsWithFetchRequest_error_usingBlock(
                 &request,
                 Some(&mut error),
                 &block,
+            )
+        };
+        if !success {
+            let detail = error
+                .map(|e| e.localizedDescription().to_string())
+                .unwrap_or_else(|| "unknown error".to_string());
+            tracing::warn!(
+                group = %group_name,
+                error = %detail,
+                "failed to enumerate members while counting group"
             );
         }
 
@@ -619,18 +699,16 @@ fn get_group_members_impl(
     let groups = unsafe { store.groupsMatchingPredicate_error(None) }
         .map_err(|err| ContactsError::ObjcError(err.localizedDescription().to_string()))?;
 
-    let mut target_group_id = None;
-    let count = groups.len();
-    for i in 0..count {
-        let group = groups.objectAtIndex(i);
-        let group_name = unsafe { group.name() }.to_string();
-        if group_name.eq_ignore_ascii_case(name) {
-            target_group_id = Some(unsafe { group.identifier() }.to_string());
-            break;
-        }
-    }
-
-    let group_id = target_group_id.ok_or_else(|| ContactsError::GroupNotFound(name.into()))?;
+    let group_id = (0..groups.len())
+        .find_map(|i| {
+            let group = groups.objectAtIndex(i);
+            // SAFETY: `group` is a live CNGroup returned by the matching-predicate query.
+            unsafe { group.name() }
+                .to_string()
+                .eq_ignore_ascii_case(name)
+                .then(|| unsafe { group.identifier() }.to_string())
+        })
+        .ok_or_else(|| ContactsError::GroupNotFound(name.into()))?;
 
     let keys = contact_fetch_keys_array();
     let predicate = unsafe {
