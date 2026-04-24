@@ -5,16 +5,28 @@ use objc2_foundation::{NSArray, NSString};
 pub fn contact_fetch_keys() -> Vec<objc2::rc::Retained<ProtocolObject<dyn CNKeyDescriptor>>> {
     let key_strings = [
         "identifier",
+        "contactType",
+        "namePrefix",
         "givenName",
+        "middleName",
         "familyName",
+        "nameSuffix",
+        "nickname",
         "organizationName",
+        "departmentName",
         "jobTitle",
-        // "note" is omitted — requires com.apple.developer.contacts.notes entitlement
-        // on macOS Sequoia+. Accessing it without the entitlement throws an uncatchable
-        // ObjC exception that aborts the process.
+        "phoneticGivenName",
+        "phoneticMiddleName",
+        "phoneticFamilyName",
+        "phoneticOrganizationName",
+        // "note" is omitted — reading it requires com.apple.developer.contacts.notes
+        // entitlement on macOS Sequoia+. Accessing without the entitlement throws an
+        // uncatchable ObjC exception that aborts the process. Writes via setNote do
+        // not require the entitlement (the create/update paths set it directly).
         "emailAddresses",
         "phoneNumbers",
         "postalAddresses",
+        "urlAddresses",
         "birthday",
     ];
 
