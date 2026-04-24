@@ -40,3 +40,7 @@ Configure as a local MCP server in your MCP client (e.g., Claude Desktop):
 | `contacts_delete` | Delete a contact |
 | `groups_list` | List all contact groups with member counts |
 | `groups_members` | Get contacts in a group by name |
+
+## License
+
+Licensed under the [MIT License](LICENSE).
