@@ -1,4 +1,4 @@
-# tashkent
+# cosmic-grackle
 
 A macOS Contacts MCP server written in Rust. Exposes Apple Contacts via the Model Context Protocol (MCP) over stdio transport.
 
@@ -22,7 +22,7 @@ Configure as a local MCP server in your MCP client (e.g., Claude Desktop):
 {
   "mcpServers": {
     "contacts": {
-      "command": "/path/to/tashkent"
+      "command": "/path/to/cosmic-grackle"
     }
   }
 }

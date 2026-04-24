@@ -3,8 +3,8 @@ use rmcp::ServiceExt;
 use rmcp::transport::stdio;
 use tracing_subscriber::EnvFilter;
 
-use tashkent::contact_store::ContactStoreHandle;
-use tashkent::server::ContactsServer;
+use cosmic_grackle::contact_store::ContactStoreHandle;
+use cosmic_grackle::server::ContactsServer;
 
 #[tokio::main]
 async fn main() -> Result<()> {
