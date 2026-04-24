@@ -15,7 +15,7 @@ This skill covers create / update / delete workflows against the macOS Contacts 
 ## When NOT to use
 
 - The user is managing contacts in Google, iCloud web, Outlook, HubSpot, Salesforce, or any non-macOS store.
-- The user wants to edit fields this MCP does not expose: phone numbers on an existing contact, email addresses on an existing contact, birthdays, addresses, or group membership.
+- The user wants to rename a label (e.g., change a phone's label from "mobile" to "work") or change group membership — neither custom labels nor group add/remove are exposed by this MCP. Direct them to Contacts.app.
 
 ## Identifier model
 
@@ -23,13 +23,20 @@ Every contact has an opaque identifier returned in the `id` field. `contacts_upd
 
 Before any update or delete, resolve the id with `contacts_search` (by name substring) or `contacts_list`. If the search returns multiple matches, ask the user which one to act on; do not guess.
 
-`contacts_get` returns the full contact record for a known id and is useful for confirming "am I about to edit the right person?" before a mutation.
+`contacts_get` returns the full contact record for a known id and is useful for confirming "am I about to edit the right person?" before a mutation, and for reading the exact stored form of phones / emails / URLs / addresses before using the `_from` ops on update.
 
 ## Create
 
 Tool: `contacts_create`
 
-At least one of `first_name`, `last_name`, or `organization` is required. All other fields are optional. `email` and `phone` are the only array-backed fields exposed on create — if multiple phones or emails are needed, you can only populate one via this tool; the user must add the rest in Contacts.app manually.
+At least one of `first_name`, `last_name`, or `organization` is required. Fields, grouped:
+
+- **Name:** `contact_type` (`"person"` default, or `"organization"`), `name_prefix`, `first_name`, `middle_name`, `last_name`, `name_suffix`, `nickname`, plus phonetic variants `phonetic_given_name`, `phonetic_middle_name`, `phonetic_family_name`, `phonetic_organization_name` (primarily for CJK / kana sort order).
+- **Organization:** `organization`, `department`, `job_title`.
+- **Contact methods (one entry each, default label in parens):** `email` (work), `phone` (mobile), `url` (homepage), `postal_address` (home). `postal_address` is a structured object with optional `street`, `city`, `state`, `postal_code`, `country` sub-fields — any subset may be provided.
+- **Other:** `note`, `birthday` as `"YYYY-MM-DD"` or `"--MM-DD"` (month/day without year).
+
+Only one phone, email, url, and postal address can be set on create. For additional entries or non-default labels, create first and then layer on more with `contacts_update` (each Add call uses the same default label — `Contacts.app` is the only place to rename labels).
 
 Returned JSON: `{"id": "<opaque-id>", "success": true}`. Store the id if subsequent operations are planned.
 
@@ -38,40 +45,94 @@ Example call:
 ```json
 {
   "first_name": "Ada",
+  "middle_name": "Augusta",
   "last_name": "Lovelace",
-  "email": "ada@example.org",
-  "phone": "+1-555-0100",
   "organization": "Analytical Engine Co.",
   "job_title": "Mathematician",
+  "email": "ada@example.org",
+  "url": "https://example.org",
+  "birthday": "1815-12-10",
+  "postal_address": {
+    "street": "12 St. James's Square",
+    "city": "London",
+    "country": "UK"
+  },
   "note": "First programmer"
 }
 ```
 
-Length caps (MCP rejects over-limit input): names 256 bytes, email 320, phone 64, organization 256, job title 256, note 4096.
+Length caps (MCP rejects over-limit input, byte counts): names 256, email 320, phone 64, url 2048, organization 256, department 256, job title 256, note 4096, birthday 32, contact_type 32, each postal sub-field 512.
 
 ## Update
 
 Tool: `contacts_update`
 
-Requires `id`. Supply only the fields you want to change — omitted fields are left alone. This is a partial update, not a replace.
+Requires `id`. Partial update — omitted fields are left alone.
 
-**Updatable fields**: `first_name`, `last_name`, `organization`, `job_title`, `note`.
+### Scalar fields (direct assignment)
 
-**Not updatable via this MCP**: `email`, `phone`, birthday, addresses, group membership. If the user asks to change any of these, tell them the MCP cannot do it and they need to edit in Contacts.app directly.
+Any of these may be supplied to overwrite the stored value:
+`contact_type`, `name_prefix`, `first_name`, `middle_name`, `last_name`, `name_suffix`, `nickname`, the four `phonetic_*` fields, `organization`, `department`, `job_title`, `note`, `birthday`.
+
+### Phones, emails, URLs, postal addresses (paired `_from` / `_to` ops)
+
+Four field families are edited via paired fields:
+
+- `phone_from` / `phone_to`
+- `email_from` / `email_to`
+- `url_from` / `url_to`
+- `postal_from` / `postal_to`
+
+Semantics per pair:
+
+| `_from` | `_to` | Effect |
+|---------|-------|--------|
+| unset | set | **Add** `_to` as a new entry with the default label |
+| set | unset | **Remove** the entry matching `_from` |
+| set | set | **Replace**: match on `_from`, overwrite with `_to`, keep the original label |
+
+Matching is **exact** against the stored value, so call `contacts_get` first to see the canonical form. `postal_from` matches against the joined-string shown in `Contact.addresses` (e.g., `"123 Main St, Austin, TX, 78701, USA"`), while `postal_to` is a structured `PostalAddressInput` (same shape as `postal_address` on create). Any `_from` or `_to` provided must be non-empty — a deliberate "clear this entry" has to be a Remove (`_from` only), not a Replace to an empty string.
 
 Workflow:
-1. `contacts_search` with the user's description (e.g., name) to resolve the id.
-2. If 0 matches: confirm spelling with the user. If >1: disambiguate using `contacts_get` on each or ask the user.
-3. `contacts_update` with `id` + the fields to change.
-4. Returned JSON: `{"success": true|false}`.
+1. `contacts_search` with the user's description to resolve the id.
+2. If 0 matches: confirm spelling. If >1: disambiguate with `contacts_get` on each or ask the user.
+3. `contacts_get` to read the stored form of any phone/email/URL/address you're about to replace or remove.
+4. `contacts_update` with `id` + changed scalars and/or `_from` / `_to` pairs.
+5. Returned JSON: `{"success": true|false}`.
 
-Example call:
+Examples:
 
+Add a second phone:
+```json
+{ "id": "ABCD-1234", "phone_to": "+1-555-0101" }
+```
+
+Remove an email:
+```json
+{ "id": "ABCD-1234", "email_from": "old@example.org" }
+```
+
+Replace a URL (label preserved):
+```json
+{ "id": "ABCD-1234", "url_from": "https://old.example.org", "url_to": "https://new.example.org" }
+```
+
+Replace a postal address:
 ```json
 {
-  "id": "ABCD-1234-...",
+  "id": "ABCD-1234",
+  "postal_from": "123 Main St, Austin, TX, 78701, USA",
+  "postal_to": { "street": "456 Elm St", "city": "Austin", "state": "TX", "postal_code": "78702", "country": "USA" }
+}
+```
+
+Change a scalar alongside a phone replacement:
+```json
+{
+  "id": "ABCD-1234",
   "job_title": "Senior Mathematician",
-  "organization": "Babbage & Co."
+  "phone_from": "+1-555-0100",
+  "phone_to": "+1-555-0200"
 }
 ```
 
@@ -102,6 +163,8 @@ The first tool call after installing this plugin triggers macOS TCC (Transparenc
 ## Common pitfalls
 
 - **Treating names as stable keys.** Two contacts can share a name. Always resolve to an id before mutating, and confirm with the user when search returns more than one match.
-- **Trying to update `email` or `phone`.** The MCP does not expose these on update. Surface that limitation to the user instead of silently doing nothing.
+- **Skipping `contacts_get` before a Replace or Remove.** The `_from` value must exactly match the stored form. If the user says "change Bob's 555-0100 to 555-0200", read the contact first — it may be stored as `"+1 (555) 010-0000"` and an unnormalized `_from` will silently fail to match.
+- **Accidental Add when an update was intended.** Supplying only `_to` creates a new entry with the default label; it does not modify an existing one. To change an existing entry, always pair `_from` with `_to`.
+- **Expecting label changes.** Add/Replace uses default labels (mobile / work / homepage / home); this MCP cannot retitle an entry's label. If the user wants a different label, they need Contacts.app.
 - **Skipping the confirmation step on delete.** Deletion cannot be undone through this plugin.
 - **Assuming read-after-write consistency timing.** After `contacts_create`, `contacts_search` for the same name usually returns the new contact immediately, but if it doesn't, fall back to the id returned from `contacts_create`.
