@@ -1,7 +1,7 @@
 {
   "name": "cosmic-grackle",
   "description": "macOS Contacts MCP server with a skill for creating, updating, and deleting contacts via Apple's native Contacts framework.",
-  "version": "0.0.0-dev",
+  "version": "0.1.3",
   "author": {
     "name": "Nick Gerakines",
     "email": "nick.gerakines@gmail.com"
