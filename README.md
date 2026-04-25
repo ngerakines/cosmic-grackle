@@ -1,5 +1,8 @@
 # cosmic-grackle
 
+> [!WARNING]
+> **This MCP can permanently modify or delete contacts in your local macOS address book.** The mutating tools (`contacts_create`, `contacts_update`, `contacts_delete`) write directly to `CNContactStore` — there is no undo. Before using this plugin, **back up your contacts** (Contacts.app → File → Export → Contacts Archive, or sync to iCloud) and **approve each mutating action individually** rather than running this in any auto-approve / YOLO mode. An LLM that misreads a request can clobber the wrong record just as easily as the right one.
+
 A macOS Contacts MCP server and Claude Code plugin written in Rust. Exposes the local Apple Contacts database (CNContactStore) over the Model Context Protocol (MCP) so Claude can read, search, and CRUD entries on the user's Mac. Applies only to the native macOS Contacts app — **not** Google Contacts, iCloud.com, Outlook, or third-party CRMs.
 
 ## What it does
@@ -24,15 +27,16 @@ cargo build --release
 
 ## Install as a Claude plugin
 
-Each tagged release publishes `cosmic-grackle-plugin.tar.gz` — a bundle containing a universal (x86_64 + arm64) binary, the `macos-contacts` skill, and a plugin manifest. Install it into Claude Desktop / Claude Code:
+Install through the Claude plugin marketplace from inside Claude Code (works for both Claude Desktop and the standalone Claude Code CLI — they share `~/.claude/plugins/`):
 
-```sh
-mkdir -p ~/.claude/plugins
-tar -xzf cosmic-grackle-plugin.tar.gz -C ~/.claude/plugins/
-xattr -dr com.apple.quarantine ~/.claude/plugins/cosmic-grackle
+```text
+/plugin marketplace add ngerakines/cosmic-grackle
+/plugin install cosmic-grackle@cosmic-grackle
 ```
 
-The `xattr` step removes Gatekeeper quarantine from the unsigned binary so Claude can launch it. Restart Claude Desktop (or run `/plugin` in Claude Code) to pick up the plugin. The first tool call triggers the macOS Contacts permission prompt; grant access in **System Settings → Privacy & Security → Contacts**.
+On the next session start, a `SessionStart` hook downloads the universal (x86_64 + arm64) binary from the matching GitHub release into the plugin's `bin/` directory and clears the macOS Gatekeeper quarantine. The first contacts tool call then triggers the macOS Contacts permission prompt; grant access in **System Settings → Privacy & Security → Contacts**.
+
+To upgrade, run `/plugin update cosmic-grackle@cosmic-grackle` and restart the session — the hook detects the version change and re-fetches the binary.
 
 ## Usage (manual config)
 

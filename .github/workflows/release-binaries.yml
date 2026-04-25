@@ -111,10 +111,11 @@ jobs:
           chmod +x "$STAGE/bin/cosmic-grackle"
 
           VERSION="${GITHUB_REF_NAME}"
-          jq --arg v "$VERSION" '.version = $v' \
-            "$STAGE/.claude-plugin/plugin.json" \
-            > "$STAGE/.claude-plugin/plugin.json.tmp"
-          mv "$STAGE/.claude-plugin/plugin.json.tmp" "$STAGE/.claude-plugin/plugin.json"
+          PLUGIN_VERSION=$(jq -r '.version' "$STAGE/.claude-plugin/plugin.json")
+          if [[ "$PLUGIN_VERSION" != "$VERSION" ]]; then
+            echo "::error::plugin.json version ($PLUGIN_VERSION) does not match tag ($VERSION). Bump plugin/.claude-plugin/plugin.json before tagging." >&2
+            exit 1
+          fi
 
           cp LICENSE README.md "$STAGE/"
 
