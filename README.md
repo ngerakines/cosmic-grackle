@@ -14,22 +14,21 @@ A macOS Contacts MCP server written in Rust. Exposes Apple Contacts via the Mode
 cargo build --release
 ```
 
-## Install into Claude Desktop
+## Install as a Claude plugin
 
-Each tagged release publishes `cosmic-grackle.mcpb` — an [MCP Bundle](https://github.com/anthropics/mcpb) containing a universal (x86_64 + arm64) macOS binary and a manifest.
+Each tagged release publishes `cosmic-grackle-plugin.tar.gz` — a bundle containing a universal (x86_64 + arm64) binary, the `macos-contacts` skill, and a plugin manifest. Install it into Claude Desktop / Claude Code:
 
-1. Download `cosmic-grackle.mcpb` from the latest release.
-2. Remove Gatekeeper quarantine so Claude Desktop can launch the unsigned binary after install:
-   ```sh
-   xattr -d com.apple.quarantine cosmic-grackle.mcpb
-   ```
-3. Double-click the `.mcpb` file (or drag it into Claude Desktop's Extensions panel) to install.
+```sh
+mkdir -p ~/.claude/plugins
+tar -xzf cosmic-grackle-plugin.tar.gz -C ~/.claude/plugins/
+xattr -dr com.apple.quarantine ~/.claude/plugins/cosmic-grackle
+```
 
-Claude Desktop extracts the bundle and registers the MCP server. The first tool call triggers the macOS Contacts permission prompt; grant access in **System Settings → Privacy & Security → Contacts**.
+The `xattr` step removes Gatekeeper quarantine from the unsigned binary so Claude can launch it. Restart Claude Desktop (or run `/plugin` in Claude Code) to pick up the plugin. The first tool call triggers the macOS Contacts permission prompt; grant access in **System Settings → Privacy & Security → Contacts**.
 
 ## Usage (manual config)
 
-As an alternative to the MCPB bundle, configure the binary directly in your MCP client:
+As an alternative to the plugin bundle, configure the binary directly in your MCP client (e.g., Claude Desktop):
 
 ```json
 {
