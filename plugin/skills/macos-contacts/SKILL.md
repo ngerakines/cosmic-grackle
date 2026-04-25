@@ -1,11 +1,13 @@
 ---
 name: macos-contacts
-description: Use when the user wants to create, update, or delete a contact in the macOS Contacts app (Apple Contacts) on their local Mac. Triggers on phrases like "add a contact on my Mac", "create a new contact for X", "update Jane's job title", "change Bob's organization", "delete the contact for Alice", "remove a duplicate contact from Contacts.app". Applies only to the native macOS Contacts app backed by the CNContactStore framework — NOT Google Contacts, iCloud.com, CRMs, or address books in third-party apps. Uses the stdio MCP server registered as `contacts` in this plugin, which exposes `contacts_search`, `contacts_get`, `contacts_create`, `contacts_update`, `contacts_delete`, `contacts_list`, `groups_list`, and `groups_members`. The first tool invocation after install prompts the user to grant Contacts access in System Settings.
+description: Use when the user wants to create, update, or delete a contact in the macOS Contacts app (Apple Contacts) on their local Mac. Triggers on phrases like "add a contact on my Mac", "create a new contact for X", "update Jane's job title", "change Bob's organization", "delete the contact for Alice", "remove a duplicate contact from Contacts.app". Applies only to the native macOS Contacts app backed by the CNContactStore framework — NOT Google Contacts, iCloud.com, CRMs, or address books in third-party apps. Requires the `cosmic-grackle` MCP server (installed separately — see https://github.com/ngerakines/cosmic-grackle) to be registered with the user's MCP client; the server exposes `contacts_search`, `contacts_get`, `contacts_create`, `contacts_update`, `contacts_delete`, `contacts_list`, `groups_list`, and `groups_members`. If those tools are not available in the session, tell the user the MCP server is not installed or registered and link them to the install instructions rather than guessing. The first tool invocation prompts the user to grant Contacts access in System Settings.
 ---
 
 # macOS Contacts CRUD
 
-This skill covers create / update / delete workflows against the macOS Contacts app via the `contacts` MCP server. Read-only tools (`contacts_list`, `contacts_search`, `contacts_get`, `groups_list`, `groups_members`) are documented here only insofar as they are prerequisites for mutating operations.
+This skill covers create / update / delete workflows against the macOS Contacts app using the `cosmic-grackle` MCP server's `contacts_create`, `contacts_update`, and `contacts_delete` tools. Read-only tools (`contacts_list`, `contacts_search`, `contacts_get`, `groups_list`, `groups_members`) are documented here only insofar as they are prerequisites for mutating operations.
+
+The MCP server is distributed independently of this skill and is registered under whatever name the user chose in their MCP client config (typically `contacts`). If the `contacts_*` tools are not present in the current session the server is not installed or not registered — point the user at https://github.com/ngerakines/cosmic-grackle for install instructions instead of attempting the workflow.
 
 ## When to use
 
@@ -154,11 +156,11 @@ Returned JSON: `{"success": true|false}`.
 
 ## Permission prompt
 
-The first tool call after installing this plugin triggers macOS TCC (Transparency, Consent, and Control) to prompt the user to grant Contacts access. If they deny, subsequent calls return an internal error. Recovery path:
+The first tool call after the MCP server is registered triggers macOS TCC (Transparency, Consent, and Control) to prompt the user to grant Contacts access. If they deny, subsequent calls return an internal error. Recovery path:
 
 1. Open **System Settings → Privacy & Security → Contacts**.
-2. Enable access for the process name (typically `cosmic-grackle` or the parent Claude app, depending on how the MCP is invoked).
-3. Restart Claude so the MCP server relaunches with the new entitlement.
+2. Enable access for the process name (typically `cosmic-grackle` or the parent MCP client, depending on how the server is invoked).
+3. Restart the MCP client (Claude Desktop, Claude Code, etc.) so the MCP server relaunches with the new entitlement.
 
 ## Common pitfalls
 
